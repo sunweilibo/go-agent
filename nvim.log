@@ -1,0 +1,2 @@
+WRN 2026-10-09T22:11:32.168 ?.90068    server_start:197: Failed to start server: operation not permitted: /var/folders/0_/l9x8tpd93glb675lz9pt_vhh0000gn/T/nvim.villey/3RaXrc/nvim.90068.0
+WRN 2026-10-09T22:24:52.338 ?.93553    server_start:197: Failed to start server: operation not permitted: /var/folders/0_/l9x8tpd93glb675lz9pt_vhh0000gn/T/nvim.villey/DV4022/nvim.93553.0

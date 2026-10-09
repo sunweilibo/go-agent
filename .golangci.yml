@@ -1,0 +1,153 @@
+# 通用严格配置，适用于 golangci-lint v2；建议团队和 CI 固定同一版本。
+# Go 版本由 go.mod 推断，便于跨项目复用。
+# 检查：golangci-lint run ./...
+# 格式化：golangci-lint fmt ./...
+# 配置校验：golangci-lint config verify
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+  relative-path-mode: gomod
+
+linters:
+  # 使用明确的规则清单，避免升级后自动启用新增规则。
+  default: none
+  enable:
+    # 正确性和静态分析。
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - unconvert
+    - unparam
+    - wastedassign
+    - forcetypeassert
+    - makezero
+    - durationcheck
+    - copyloopvar
+    - predeclared
+    - gocheckcompilerdirectives
+    # 错误处理。
+    - errorlint
+    - errname
+    - nilerr
+    - nilnesserr
+    - nilnil
+    # 安全、上下文与资源生命周期。
+    - gosec
+    - bidichk
+    - bodyclose
+    - rowserrcheck
+    - sqlclosecheck
+    - noctx
+    - contextcheck
+    - fatcontext
+    - nosprintfhostport
+    # 可维护性和代码风格。
+    - gocritic
+    - revive
+    - gocognit
+    - cyclop
+    - funlen
+    - nestif
+    - nakedret
+    - goconst
+    - misspell
+    - dupword
+    - whitespace
+    - nolintlint
+    # 测试质量。
+    - testifylint
+    - thelper
+    - tparallel
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        # 内存布局优化不作为通用代码质量门槛。
+        - fieldalignment
+
+    staticcheck:
+      checks:
+        - all
+
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+
+    gosec:
+      severity: low
+      confidence: low
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+
+    revive:
+      enable-default-rules: true
+      confidence: 0.8
+      rules:
+        - name: redefines-builtin-id
+        - name: modifies-value-receiver
+        - name: confusing-results
+        - name: unconditional-recursion
+        - name: identical-branches
+
+    cyclop:
+      max-complexity: 10
+    gocognit:
+      min-complexity: 15
+    funlen:
+      lines: 80
+      statements: 40
+      ignore-comments: true
+    nestif:
+      min-complexity: 4
+    nakedret:
+      max-func-lines: 0
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    misspell:
+      locale: US
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+  exclusions:
+    generated: strict
+    # 不使用默认豁免预设，保留错误处理和公共 API 文档检查。
+    presets: []
+    warn-unused: true
+    rules:
+      # 表驱动测试允许较长函数和较高复杂度，仍检查安全和错误处理。
+      - path: '_test\.go$'
+        linters:
+          - cyclop
+          - gocognit
+          - funlen
+          - nestif
+          - goconst
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      extra-rules: true
+  exclusions:
+    generated: strict
+
+issues:
+  # 显示所有问题，不按规则或相同文本截断。
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false
