@@ -49,7 +49,7 @@ type FunctionDefinition struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
-func requestModel(payload ChatRequest) (Message, error) {
+func requestModel(ctx context.Context, payload ChatRequest) (Message, error) {
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	if apiKey == "" {
 		return Message{}, fmt.Errorf("请设置 DEEPSEEK_API_KEY")
@@ -60,7 +60,7 @@ func requestModel(payload ChatRequest) (Message, error) {
 		return Message{}, fmt.Errorf("编码请求失败: %w", err)
 	}
 	// 构建 http 请求
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://api.deepseek.com/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.deepseek.com/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return Message{}, fmt.Errorf("创建请求失败: %w", err)
 	}
@@ -80,7 +80,7 @@ func requestModel(payload ChatRequest) (Message, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return Message{}, fmt.Errorf("模型服务返回错误：%v", err)
+		return Message{}, fmt.Errorf("模型服务返回错误：%v", resp.StatusCode)
 	}
 
 	// 解析响应
@@ -95,7 +95,8 @@ func requestModel(payload ChatRequest) (Message, error) {
 	return result.Choices[0].Message, nil
 }
 
-func askDeepSeek(task string) (string, error) {
+func askDeepSeek(ctx context.Context, task string) (string, error) {
+	registry, definition := newToolRegistry()
 	payload := ChatRequest{
 		Model: "deepseek-flash",
 		Messages: []Message{
@@ -111,49 +112,18 @@ func askDeepSeek(task string) (string, error) {
 				Content: task,
 			},
 		},
-		Tools: []ToolDefinition{
-			{
-				Type: "function",
-				Function: FunctionDefinition{
-					Name:        "get_current_time",
-					Description: "获取程序所在机器的当前时间，包含时区",
-					Parameters: map[string]any{
-						"type":       "object",
-						"properties": map[string]any{},
-						"required":   []string{},
-					},
-				},
-			},
-			{
-				Type: "function",
-				Function: FunctionDefinition{
-					Name:        "add_numbers",
-					Description: "计算两个数字的和",
-					Parameters: map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"a": map[string]any{
-								"type":        "number",
-								"description": "第一个加数",
-							},
-							"b": map[string]any{
-								"type":        "number",
-								"description": "第二个加数",
-							},
-						},
-						"required": []string{"a", "b"},
-					},
-				},
-			},
-		},
+		Tools: definition,
 	}
 
 	const maxSteps = 10
 
 	for step := 0; step < maxSteps; step++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		fmt.Printf("第 %d 轮请求模型", step+1)
 
-		message, err := requestModel(payload)
+		message, err := requestModel(ctx, payload)
 		if err != nil {
 			fmt.Printf("怎么就失败了呢%v", err)
 			return "", err
@@ -166,20 +136,17 @@ func askDeepSeek(task string) (string, error) {
 		payload.Messages = append(payload.Messages, message)
 
 		for _, call := range message.ToolCalls {
-			var toolResult string
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			tool, ok := registry[call.Function.Name]
+			if !ok {
+				return "", fmt.Errorf("未知工具： %s", call.Function.Name)
+			}
 
-			switch call.Function.Name {
-			case "get_current_time":
-				toolResult = getCurrentTime()
-			case "add_numbers":
-				result, toolErr := addNumbers(call.Function.Arguments)
-				if toolErr != nil {
-					toolResult = "工具执行失败：" + toolErr.Error()
-				} else {
-					toolResult = result
-				}
-			default:
-				return "", fmt.Errorf("未知工具：%s", call.Function.Name)
+			toolResult, toolErr := tool.Execute(call.Function.Arguments)
+			if toolErr != nil {
+				toolResult = "工具执行失败:" + toolErr.Error()
 			}
 
 			payload.Messages = append(payload.Messages, Message{

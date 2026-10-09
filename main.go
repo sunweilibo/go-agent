@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -21,7 +24,12 @@ func main() {
 		return
 	}
 
-	resp, err := askDeepSeek(task)
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	ctx, cancel := context.WithTimeout(signalCtx, 2*time.Minute)
+	defer cancel()
+
+	resp, err := askDeepSeek(ctx, task)
 	if err != nil {
 		fmt.Println("执行失败", err)
 		os.Exit(1)
