@@ -1,14 +1,36 @@
 package main
 
+import "context"
+
 type Tool struct {
 	Definition ToolDefinition
-	Execute    func(arguments string) (string, error)
+	Execute    func(ctx context.Context, arguments string) (string, error)
 }
 
 type ToolRegistry map[string]Tool
 
 func newToolRegistry() (ToolRegistry, []ToolDefinition) {
 	tools := []Tool{
+		{
+			Definition: ToolDefinition{
+				Type: "function",
+				Function: FunctionDefinition{
+					Name:        "wait_seconds",
+					Description: "等待指定秒数，范围为 1 到 30 秒。",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"seconds": map[string]any{
+								"type":    "integer",
+								"minimum": 1,
+								"maximum": 30,
+							},
+						},
+					},
+				},
+			},
+			Execute: waitSeconds,
+		},
 		{
 			Definition: ToolDefinition{
 				Type: "function",
@@ -22,7 +44,7 @@ func newToolRegistry() (ToolRegistry, []ToolDefinition) {
 					},
 				},
 			},
-			Execute: func(arguments string) (string, error) {
+			Execute: func(ctx context.Context, arguments string) (string, error) {
 				return getCurrentTime(), nil
 			},
 		},
