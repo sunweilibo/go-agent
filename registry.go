@@ -1,6 +1,10 @@
 package main
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
 
 type Tool struct {
 	Definition ToolDefinition
@@ -9,7 +13,7 @@ type Tool struct {
 
 type ToolRegistry map[string]Tool
 
-func newToolRegistry() (ToolRegistry, []ToolDefinition) {
+func newToolRegistry() (ToolRegistry, []ToolDefinition, error) {
 	tools := []Tool{
 		{
 			Definition: ToolDefinition{
@@ -26,6 +30,7 @@ func newToolRegistry() (ToolRegistry, []ToolDefinition) {
 								"maximum": 30,
 							},
 						},
+						"required": []string{"seconds"},
 					},
 				},
 			},
@@ -78,9 +83,19 @@ func newToolRegistry() (ToolRegistry, []ToolDefinition) {
 
 	for _, tool := range tools {
 		name := tool.Definition.Function.Name
+		if name == "" {
+			return nil, nil, errors.New("工具名称不能为空")
+		}
+
+		if tool.Execute == nil {
+			return nil, nil, fmt.Errorf("工具 %q 没有执行函数", name)
+		}
+		if _, exists := registry[name]; exists {
+			return nil, nil, fmt.Errorf("工具 %q 重复注册", name)
+		}
 		registry[name] = tool
 		definitions = append(definitions, tool.Definition)
 	}
 
-	return registry, definitions
+	return registry, definitions, nil
 }

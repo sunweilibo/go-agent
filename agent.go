@@ -4,61 +4,61 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 )
 
 type Agent struct {
 	Model       string
 	Registry    ToolRegistry
 	Definitions []ToolDefinition
+	Client      ModelClient
 	MaxSteps    int
 }
 
-func NewAgent(model string) *Agent {
-	registry, definitions := newToolRegistry()
+func NewAgent(model string, client ModelClient) (*Agent, error) {
+	registry, definitions, err := newToolRegistry()
+	if err != nil {
+		return nil, err
+	}
 
 	return &Agent{
 		Model:       model,
+		Client:      client,
 		Registry:    registry,
 		Definitions: definitions,
 		MaxSteps:    10,
-	}
+	}, nil
 }
 
 func (a *Agent) Run(
 	ctx context.Context,
+	session *Session,
 	task string,
 ) (string, error) {
+	messages := append([]Message(nil), session.Messages...)
+	messages = append(messages, Message{
+		Role:    "user",
+		Content: task,
+	})
 	payload := ChatRequest{
-		Model: a.Model,
-		Messages: []Message{
-			{
-				Role: "system",
-				Content: "你是一个助手。" +
-					"查询当前时间时必须调用 get_current_time 工具。" +
-					"涉及加法计算时必须调用 add_numbers 工具。" +
-					"获得工具结果后，根据结果回答用户。",
-			},
-			{
-				Role:    "user",
-				Content: task,
-			},
-		},
-		Tools: a.Definitions,
+		Model:    a.Model,
+		Messages: messages,
+		Tools:    a.Definitions,
 	}
 
 	for step := 0; step < a.MaxSteps; step++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		fmt.Printf("第 %d 轮请求模型", step+1)
+		fmt.Fprintf(os.Stderr, "第 %d 轮请求模型", step+1)
 
-		message, err := requestModel(ctx, payload)
+		message, err := a.Client.Generate(ctx, payload)
 		if err != nil {
-			fmt.Printf("怎么就失败了呢%v", err)
 			return "", err
 		}
 
 		if len(message.ToolCalls) == 0 {
+			session.Messages = append(payload.Messages, message)
 			return message.Content, nil
 		}
 
@@ -73,7 +73,12 @@ func (a *Agent) Run(
 				return "", fmt.Errorf("未知工具： %s", call.Function.Name)
 			}
 
+			fmt.Fprintf(os.Stderr, "正在调用工具: %s", call.Function.Name)
 			toolResult, toolErr := tool.Execute(ctx, call.Function.Arguments)
+
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
 			if toolErr != nil {
 				toolResult = "工具执行失败:" + toolErr.Error()
 			}

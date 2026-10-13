@@ -47,7 +47,7 @@ func waitSeconds(ctx context.Context, arguments string) (string, error) {
 
 	seconds := *args.Seconds
 	if seconds < 1 || seconds > 30 {
-		return "", fmt.Errorf("Seconds 必须在 1 到 20 之间")
+		return "", fmt.Errorf("seconds 必须在 1 到 30 之间")
 	}
 
 	timer := time.NewTimer(time.Duration(seconds) * time.Second)

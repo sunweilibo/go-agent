@@ -5,10 +5,15 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
 )
+
+type ModelClient interface {
+	Generate(context.Context, ChatRequest) (Message, error)
+}
 
 type Message struct {
 	Role       string     `json:"role,omitempty"`
@@ -49,7 +54,9 @@ type FunctionDefinition struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
-func requestModel(ctx context.Context, payload ChatRequest) (Message, error) {
+type DeepSeekClient struct{}
+
+func (DeepSeekClient) Generate(ctx context.Context, payload ChatRequest) (Message, error) {
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	if apiKey == "" {
 		return Message{}, fmt.Errorf("请设置 DEEPSEEK_API_KEY")
@@ -80,7 +87,11 @@ func requestModel(ctx context.Context, payload ChatRequest) (Message, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return Message{}, fmt.Errorf("模型服务返回错误：%v", resp.StatusCode)
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		if err != nil {
+			return Message{}, fmt.Errorf("模型服务返回 %s, 读取错误内容失败：%w", resp.Status, err)
+		}
+		return Message{}, fmt.Errorf("模型服务返回 %s: %s", resp.Status, data)
 	}
 
 	// 解析响应
