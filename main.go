@@ -20,13 +20,35 @@ func main() {
 	}
 
 	sessionID := flag.String("session", "", "要继续的会话 ID")
+	storeName := flag.String("store", "file", "会话存储: file 或 postgres")
 	flag.Parse()
+
+	var store SessionStore
+
+	switch *storeName {
+	case "file":
+		store = FileSessionStore{}
+	case "postgres":
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		pool, err := openDatabase(ctx)
+		cancel()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "连接数据库失败: ", err)
+			os.Exit(1)
+		}
+		defer pool.Close()
+
+		store = &PostgresSessionStore{Pool: pool}
+	default:
+		fmt.Fprintln(os.Stderr, "未知的存储方式:", *storeName)
+		os.Exit(1)
+	}
 
 	var session *Session
 	if *sessionID == "" {
 		session = NewSession()
 	} else {
-		session, err = loadSession(*sessionID)
+		session, err = store.Load(context.Background(), *sessionID)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "加载会话失败:", err)
 			os.Exit(1)
@@ -35,13 +57,13 @@ func main() {
 
 	fmt.Fprintln(os.Stderr, "会话 ID:", session.ID)
 
-	if len(os.Args) > 1 {
+	if len(flag.Args()) > 0 {
 		task := strings.TrimSpace(strings.Join(flag.Args(), " "))
 		if task == "" {
 			fmt.Fprintln(os.Stderr, "请提供任务")
 			os.Exit(1)
 		}
-		if err := runTask(agent, session, task); err != nil {
+		if err := runTask(agent, store, session, task); err != nil {
 			fmt.Fprintln(os.Stderr, "执行失败", err)
 			os.Exit(1)
 		}
@@ -72,7 +94,7 @@ func main() {
 			continue
 		}
 
-		if err := runTask(agent, session, task); err != nil {
+		if err := runTask(agent, store, session, task); err != nil {
 			fmt.Fprintln(os.Stderr, "执行失败:", err)
 			if errors.Is(err, context.Canceled) {
 				return
@@ -86,7 +108,7 @@ func main() {
 	}
 }
 
-func runTask(agent *Agent, session *Session, task string) error {
+func runTask(agent *Agent, store SessionStore, session *Session, task string) error {
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -99,7 +121,7 @@ func runTask(agent *Agent, session *Session, task string) error {
 	}
 
 	fmt.Println(answer)
-	if err := saveSession(session); err != nil {
+	if err := store.Save(ctx, session); err != nil {
 		return fmt.Errorf("回答已输出,但保存会话失败: %w", err)
 	}
 	return nil

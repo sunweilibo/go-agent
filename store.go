@@ -52,7 +52,7 @@ func saveSession(session *Session) error {
 	return nil
 }
 
-var validSessionID = regexp.MustCompile(`^[A-Za-z0-9-_]{1,128}$`)
+var validSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
 func loadSession(id string) (*Session, error) {
 	if !validSessionID.MatchString(id) {
@@ -70,7 +70,7 @@ func loadSession(id string) (*Session, error) {
 	}
 
 	if snapshot.Version != 1 {
-		return nil, fmt.Errorf("不支持的会话文件版本: %w", err)
+		return nil, fmt.Errorf("不支持的会话文件版本: %d", snapshot.Version)
 	}
 
 	if snapshot.ID != id {
