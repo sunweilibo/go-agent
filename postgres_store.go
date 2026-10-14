@@ -15,6 +15,9 @@ type PostgresSessionStore struct {
 }
 
 func (s *PostgresSessionStore) Save(ctx context.Context, session *Session) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s == nil || s.Pool == nil {
 		return fmt.Errorf("数据库连接池未配置")
 	}
@@ -46,6 +49,9 @@ func (s *PostgresSessionStore) Save(ctx context.Context, session *Session) error
 }
 
 func (s *PostgresSessionStore) Load(ctx context.Context, id string) (*Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if s == nil || s.Pool == nil {
 		return nil, fmt.Errorf("数据库连接池未配置")
 	}
@@ -62,7 +68,7 @@ func (s *PostgresSessionStore) Load(ctx context.Context, id string) (*Session, e
 		where session_id = $1`, id).Scan(&version, &rawMessages)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("会话%q不存在", id)
+		return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 	}
 
 	if err != nil {
