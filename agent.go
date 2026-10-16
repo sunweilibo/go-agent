@@ -4,15 +4,20 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
+	"log/slog"
+	"strings"
+	"time"
 )
 
 type Agent struct {
-	Model       string
-	Registry    ToolRegistry
-	Definitions []ToolDefinition
-	Client      ModelClient
-	MaxSteps    int
+	Model              string           `json:"model"`
+	Registry           ToolRegistry     `json:"registry"`
+	Definitions        []ToolDefinition `json:"definitions"`
+	Client             ModelClient      `json:"client"`
+	MaxSteps           int              `json:"max_steps"`
+	MaxToolCalls       int              `json:"max_tool_calls"`
+	MaxToolOutputBytes int
+	ToolTimeout        time.Duration
 }
 
 func NewAgent(model string, client ModelClient) (*Agent, error) {
@@ -22,11 +27,14 @@ func NewAgent(model string, client ModelClient) (*Agent, error) {
 	}
 
 	return &Agent{
-		Model:       model,
-		Client:      client,
-		Registry:    registry,
-		Definitions: definitions,
-		MaxSteps:    10,
+		Model:              model,
+		Client:             client,
+		Registry:           registry,
+		Definitions:        definitions,
+		MaxSteps:           10,
+		MaxToolCalls:       30,
+		MaxToolOutputBytes: 64 << 10,
+		ToolTimeout:        45 * time.Second,
 	}, nil
 }
 
@@ -35,6 +43,7 @@ func (a *Agent) Run(
 	session *Session,
 	task string,
 ) (string, error) {
+	toolCallsUsed := 0
 	messages := append([]Message(nil), session.Messages...)
 	messages = append(messages, Message{
 		Role:    "user",
@@ -50,7 +59,7 @@ func (a *Agent) Run(
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		fmt.Fprintf(os.Stderr, "第 %d 轮请求模型", step+1)
+		slog.Info("请求模型", "session_id", session.ID, "step", step+1)
 
 		message, err := a.Client.Generate(ctx, payload)
 		if err != nil {
@@ -61,6 +70,12 @@ func (a *Agent) Run(
 			session.Messages = append(payload.Messages, message)
 			return message.Content, nil
 		}
+
+		if len(message.ToolCalls) > a.MaxToolCalls-toolCallsUsed {
+			return "", fmt.Errorf("已达到最大工具调用次数 %d, 任务尚未完成", a.MaxToolCalls)
+		}
+
+		toolCallsUsed += len(message.ToolCalls)
 
 		payload.Messages = append(payload.Messages, message)
 
@@ -73,8 +88,10 @@ func (a *Agent) Run(
 				return "", fmt.Errorf("未知工具： %s", call.Function.Name)
 			}
 
-			fmt.Fprintf(os.Stderr, "正在调用工具: %s", call.Function.Name)
-			toolResult, toolErr := tool.Execute(ctx, call.Function.Arguments)
+			slog.Info("调用工具", "session_id", session.ID, "step", step+1, "tool", call.Function.Name, "call_id", call.ID)
+			toolCtx, cancel := context.WithTimeout(ctx, a.ToolTimeout)
+			toolResult, toolErr := tool.Execute(toolCtx, call.Function.Arguments)
+			cancel()
 
 			if err := ctx.Err(); err != nil {
 				return "", err
@@ -83,6 +100,7 @@ func (a *Agent) Run(
 				toolResult = "工具执行失败:" + toolErr.Error()
 			}
 
+			toolResult = limitToolOutput(toolResult, a.MaxToolOutputBytes)
 			payload.Messages = append(payload.Messages, Message{
 				Role:       "tool",
 				Content:    toolResult,
@@ -91,4 +109,22 @@ func (a *Agent) Run(
 		}
 	}
 	return "", fmt.Errorf("已达到最大模型请求次数 %d，任务尚未完成", a.MaxSteps)
+}
+
+func limitToolOutput(output string, maxBytes int) string {
+	const marker = "\n[truncated]"
+
+	if len(output) <= maxBytes {
+		return output
+	}
+
+	if maxBytes <= 0 {
+		return ""
+	}
+	if maxBytes <= len(marker) {
+		return marker[:maxBytes]
+	}
+
+	prefix := strings.ToValidUTF8(output[:maxBytes-len(marker)], "")
+	return prefix + marker
 }

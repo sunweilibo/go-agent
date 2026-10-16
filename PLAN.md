@@ -149,7 +149,7 @@
 
 ### S4. 用 pgx 实现 PostgresSessionStore
 
-已安装并固定 `github.com/jackc/pgx/v5`，使用 `pgxpool` 复用连接；当前代码从 SUPABASE_URL 读取 Postgres 连接串，后续改名为更明确的 DATABASE_URL。已按 session_id 读取一行，保存时使用参数化 SQL `INSERT ... ON CONFLICT ... DO UPDATE`，messages 用 JSONB 存储。后续补连接超时、错误路径测试与凭据日志检查。
+已安装并固定 `github.com/jackc/pgx/v5`，使用 `pgxpool` 复用连接；当前代码从 DATABASE_URL 读取 Postgres 连接串，后续改名为更明确的 DATABASE_URL。已按 session_id 读取一行，保存时使用参数化 SQL `INSERT ... ON CONFLICT ... DO UPDATE`，messages 用 JSONB 存储。后续补连接超时、错误路径测试与凭据日志检查。
 
 验收：离线测试覆盖消息编解码和存储错误传播；在真实项目中保存一轮对话，重启后用同一 session_id 继续，并确认数据库只有对应的一行。数据库连接失败和权限错误应有清楚提示。
 

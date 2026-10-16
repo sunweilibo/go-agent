@@ -8,7 +8,7 @@ import (
 )
 
 func TestDatabaseConnection(t *testing.T) {
-	if os.Getenv("SUPABASE_URL") == "" {
+	if os.Getenv("DATABASE_URL") == "" {
 		t.Skip("未设置 DATABASE_URL")
 	}
 

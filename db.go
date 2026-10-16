@@ -10,9 +10,9 @@ import (
 )
 
 func openDatabase(ctx context.Context) (*pgxpool.Pool, error) {
-	dsn := os.Getenv("SUPABASE_URL")
+	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		return nil, fmt.Errorf("请设置 SUPABASE_URL")
+		return nil, fmt.Errorf("请设置 DATABASE_URL")
 	}
 
 	config, err := pgxpool.ParseConfig(dsn)

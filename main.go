@@ -3,9 +3,12 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -13,6 +16,22 @@ import (
 )
 
 func main() {
+	if err := os.MkdirAll("data/runs", 0o700); err != nil {
+		fmt.Fprintln(os.Stderr, "创建日志目录失败", err)
+		os.Exit(1)
+	}
+
+	logFile, err := os.OpenFile("data/runs/events.jsonl", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "打开执行日志失败", err)
+		os.Exit(1)
+	}
+
+	defer logFile.Close()
+
+	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stderr, logFile), nil))
+	slog.SetDefault(logger)
+
 	agent, err := NewAgent("deepseek-flash", DeepSeekClient{})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "初始化 Agent 失败:", err)
@@ -108,12 +127,30 @@ func main() {
 	}
 }
 
-func runTask(agent *Agent, store SessionStore, session *Session, task string) error {
+func runTask(agent *Agent, store SessionStore, session *Session, task string) (runErr error) {
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	ctx, cancel := context.WithTimeout(signalCtx, 2*time.Minute)
 	defer cancel()
+
+	runID := rand.Text()
+	started := time.Now()
+
+	slog.Info("任务开始", "run_Id", runID, "session_id", session.ID)
+
+	defer func() {
+		status := "completed"
+		switch {
+		case errors.Is(runErr, context.Canceled):
+			status = "canceled"
+		case errors.Is(runErr, context.DeadlineExceeded):
+			status = "timeout"
+		case runErr != nil:
+			status = "failed"
+		}
+		slog.Info("任务结束", "run_id", runID, "session_id", session.ID, "status", status, "duration_ms", time.Since(started).Milliseconds())
+	}()
 
 	answer, err := agent.Run(ctx, session, task)
 	if err != nil {
