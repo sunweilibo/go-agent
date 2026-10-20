@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -100,7 +102,7 @@ func TestAgentRejectsTolBatchOverLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent.MaxToolCalls = 1
+	agent.Limits.MaxToolCalls = 1
 
 	executed := 0
 	tool := agent.Registry["get_current_time"]
@@ -174,7 +176,7 @@ func TestAgentLimitsToolOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent.MaxToolOutputBytes = 32
+	agent.Limits.MaxToolOutputBytes = 32
 
 	tool := agent.Registry["get_current_time"]
 	tool.Execute = func(context.Context, string) (string, error) {
@@ -188,5 +190,114 @@ func TestAgentLimitsToolOutput(t *testing.T) {
 	}
 	if modelCalls != 2 {
 		t.Fatalf("模型请求次数 = %d，期望 2", modelCalls)
+	}
+}
+
+// 验证工具超时后，Agent 会把失败结果交给模型继续处理
+func TestAgentContinuesAfterToolTimeout(t *testing.T) {
+	modelCalls := 0
+	client := modelFunc(func(_ context.Context, req ChatRequest) (Message, error) {
+		modelCalls++
+		if modelCalls == 1 {
+			call := ToolCall{ID: "call-1", Type: "function"}
+			call.Function.Name = "get_current_time"
+			call.Function.Arguments = "{}"
+			return Message{Role: "assistant", ToolCalls: []ToolCall{call}}, nil
+		}
+
+		result := req.Messages[len(req.Messages)-1]
+		if result.Role != "tool" || !strings.Contains(result.Content, context.DeadlineExceeded.Error()) {
+			t.Fatalf("模型未收到工具超时结果: %+v", result)
+		}
+		return Message{
+			Role:    "assistant",
+			Content: "工具超时了",
+		}, nil
+	})
+
+	agent, err := NewAgent("test-model", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	agent.Limits.ToolTimeout = 10 * time.Millisecond
+
+	tool := agent.Registry["get_current_time"]
+	tool.Execute = func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	agent.Registry["get_current_time"] = tool
+
+	answer, err := agent.Run(context.Background(), NewSession(), "现在几点")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "工具超时了" || modelCalls != 2 {
+		t.Fatalf("回答 = %q, 模型请求次数 = %d", answer, modelCalls)
+	}
+}
+
+// TestAgentStopsWhenTaskCanceledDuringTool 整个任务在工具执行期间被取消时，
+// Agent 应直接返回 context.Canceled，不再请求模型
+func TestAgentStopsWhenTaskCanceledDuringTool(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	modelCalls := 0
+	client := modelFunc(func(_ context.Context, _ ChatRequest) (Message, error) {
+		modelCalls++
+		call := ToolCall{ID: "call-1", Type: "function"}
+		call.Function.Name = "get_current_time"
+		call.Function.Arguments = "{}"
+		return Message{
+			Role:      "assistant",
+			ToolCalls: []ToolCall{call},
+		}, nil
+	})
+
+	agent, err := NewAgent("test-model", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tool := agent.Registry["get_current_time"]
+	tool.Execute = func(toolCtx context.Context, _ string) (string, error) {
+		cancel()
+		<-toolCtx.Done()
+		return "", toolCtx.Err()
+	}
+	agent.Registry["get_current_time"] = tool
+
+	session := NewSession()
+	_, err = agent.Run(ctx, session, "现在几点")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("错误 = %v, 期望 context.Canceled", err)
+	}
+	if modelCalls != 1 {
+		t.Fatalf("模型请求次数 = %d, 期望 1", modelCalls)
+	}
+}
+
+func TestAgentStopsWhenTaskTimeoutExpires(t *testing.T) {
+	modelCalls := 0
+	client := modelFunc(func(ctx context.Context, _ ChatRequest) (Message, error) {
+		modelCalls++
+		<-ctx.Done()
+		return Message{}, ctx.Err()
+	})
+
+	agent, err := NewAgent("test-model", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.Limits.TaskTimeout = 10 * time.Millisecond
+
+	_, err = agent.Run(context.Background(), NewSession(), "执行一个很慢的任务:")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("错误 = %v, 期望 context.DeadlineExceeded", err)
+	}
+	if modelCalls != 1 {
+		t.Fatalf("模型请求次数 = %d, 期望 = 1", modelCalls)
 	}
 }

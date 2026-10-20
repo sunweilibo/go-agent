@@ -131,9 +131,6 @@ func runTask(agent *Agent, store SessionStore, session *Session, task string) (r
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	ctx, cancel := context.WithTimeout(signalCtx, 2*time.Minute)
-	defer cancel()
-
 	runID := rand.Text()
 	started := time.Now()
 
@@ -152,13 +149,13 @@ func runTask(agent *Agent, store SessionStore, session *Session, task string) (r
 		slog.Info("任务结束", "run_id", runID, "session_id", session.ID, "status", status, "duration_ms", time.Since(started).Milliseconds())
 	}()
 
-	answer, err := agent.Run(ctx, session, task)
+	answer, err := agent.Run(signalCtx, session, task)
 	if err != nil {
 		return err
 	}
 
 	fmt.Println(answer)
-	if err := store.Save(ctx, session); err != nil {
+	if err := store.Save(signalCtx, session); err != nil {
 		return fmt.Errorf("回答已输出,但保存会话失败: %w", err)
 	}
 	return nil

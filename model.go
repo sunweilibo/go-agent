@@ -20,6 +20,7 @@ type Message struct {
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Usage      TokenUsage `json:"-"`
 }
 type ToolCall struct {
 	ID   string `json:"id"`
@@ -37,10 +38,17 @@ type ChatRequest struct {
 	Tools    []ToolDefinition `json:"tools,omitempty"`
 }
 
+type TokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type ChatResponse struct {
 	Choices []struct {
 		Message Message `json:"message"`
 	} `json:"choices"`
+	Usage TokenUsage `json:"usage"`
 }
 
 type ToolDefinition struct {
@@ -103,5 +111,8 @@ func (DeepSeekClient) Generate(ctx context.Context, payload ChatRequest) (Messag
 	if len(result.Choices) == 0 {
 		return Message{}, fmt.Errorf("模型没有返回回答")
 	}
-	return result.Choices[0].Message, nil
+
+	message := result.Choices[0].Message
+	message.Usage = result.Usage
+	return message, nil
 }
