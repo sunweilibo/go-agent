@@ -3,8 +3,11 @@ package main
 
 import (
 	"context"
+	"encoding/json/v2"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -79,7 +82,19 @@ func (a *Agent) Run(
 		if err := runCtx.Err(); err != nil {
 			return "", err
 		}
-		slog.Info("请求模型", "session_id", session.ID, "step", step+1)
+
+		requestBody, err := json.Marshal(payload)
+		if err != nil {
+			return "", fmt.Errorf("编码模型请求失败: %w", err)
+		}
+
+		slog.Info(
+			"请求模型",
+			"session_id", session.ID,
+			"step", step+1,
+			"message_count", len(payload.Messages),
+			"request_bytes", len(requestBody),
+		)
 
 		message, err := a.Client.Generate(runCtx, payload)
 		if err != nil {
@@ -159,4 +174,72 @@ func limitToolOutput(output string, maxBytes int) string {
 
 	prefix := strings.ToValidUTF8(output[:maxBytes-len(marker)], "")
 	return prefix + marker
+}
+
+func (a *Agent) EnableReadFile(rootDir string) error {
+	if !filepath.IsAbs(rootDir) {
+		return fmt.Errorf("读取根目录必须是绝对路径")
+	}
+
+	info, err := os.Stat(rootDir)
+	if err != nil {
+		return fmt.Errorf("读取根目录不可用: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("读取根目录不是文件夹: %s", rootDir)
+	}
+
+	tool := Tool{
+		Definition: ToolDefinition{
+			Type: "function",
+			Function: FunctionDefinition{
+				Name:        "read_file",
+				Description: "读取指定目录内的 utf-8 文本文件,最大 64 KiB",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": "相对于读取根目录的文件路径",
+						},
+					},
+					"required": []string{"path"},
+				},
+			},
+		},
+		Execute: func(ctx context.Context, arguments string) (string, error) {
+			return readFile(ctx, arguments, rootDir)
+		},
+	}
+
+	a.Registry["read_file"] = tool
+	a.Definitions = append(a.Definitions, tool.Definition)
+	return nil
+}
+
+func dropOldestCompletedTurn(messages []Message) ([]Message, bool) {
+	firstUser := -1
+
+	for i, message := range messages {
+		if message.Role != "user" {
+			continue
+		}
+		if firstUser == -1 {
+			firstUser = i
+			continue
+		}
+
+		// 下一条 user 出现,说明前一轮已经结束
+		last := messages[i-1]
+		if last.Role != "assistant" || len(last.ToolCalls) != 0 {
+			return messages, false
+		}
+
+		result := make([]Message, 0, len(messages)-(i-firstUser))
+		result = append(result, messages[:firstUser]...)
+		result = append(result, messages[i:]...)
+		return result, true
+	}
+
+	return messages, false
 }

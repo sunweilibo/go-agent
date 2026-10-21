@@ -17,7 +17,7 @@ type ModelClient interface {
 
 type Message struct {
 	Role       string     `json:"role,omitempty"`
-	Content    string     `json:"content,omitempty"`
+	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Usage      TokenUsage `json:"-"`

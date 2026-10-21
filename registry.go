@@ -1,9 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"unicode/utf8"
 )
 
 type Tool struct {
@@ -98,4 +104,57 @@ func newToolRegistry() (ToolRegistry, []ToolDefinition, error) {
 	}
 
 	return registry, definitions, nil
+}
+
+func readFile(ctx context.Context, arguments string, rootDir string) (string, error) {
+	const maxBytes = 64 << 10
+
+	if !filepath.IsAbs(rootDir) {
+		return "", fmt.Errorf("读取根目录必须时绝对路径")
+	}
+
+	var args struct {
+		Path string `json:"path"`
+	}
+
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return "", fmt.Errorf("解析 read_file 参数失败: %w", err)
+	}
+	if !filepath.IsLocal(args.Path) {
+		return "", fmt.Errorf("只允许工作目录内的相对路径")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	root, err := os.OpenRoot(rootDir)
+	if err != nil {
+		return "", fmt.Errorf("打开工作目录失败: %w", err)
+	}
+	defer root.Close()
+
+	file, err := root.Open(args.Path)
+	if err != nil {
+		return "", fmt.Errorf("打开文件失败: %w", err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("读取文件失败: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if len(data) > maxBytes {
+		return "", fmt.Errorf("文件超过%d字节", maxBytes)
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		return "", fmt.Errorf("文件包含 NUL 字节, 不是文本文件")
+	}
+	if !utf8.Valid(data) {
+		return "", fmt.Errorf("文件不是有效的 UTF-8文本")
+	}
+
+	return string(data), nil
 }

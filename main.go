@@ -40,7 +40,15 @@ func main() {
 
 	sessionID := flag.String("session", "", "要继续的会话 ID")
 	storeName := flag.String("store", "file", "会话存储: file 或 postgres")
+	readRoot := flag.String("read-root", "", "允许 read_file 读取的目录(绝对路径)")
 	flag.Parse()
+
+	if *readRoot != "" {
+		if err := agent.EnableReadFile(*readRoot); err != nil {
+			fmt.Fprintln(os.Stderr, "启用文件读取失败:", err)
+			os.Exit(1)
+		}
+	}
 
 	var store SessionStore
 
