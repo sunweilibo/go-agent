@@ -19,6 +19,7 @@
 - [x] 交互式多轮会话与本地 JSON 会话保存、加载。
 - [x] 模型接口和第一个工具调用历史测试。
 - [x] 使用 pgx 连接 Supabase Postgres；会话可保存到数据库并跨进程加载（用户已验证）。
+- [x] 阶段十 W1：HTTP 服务（health、创建/读取会话）完成并通过 curl 验收。
 - [ ] 数据库存储失败路径、更多离线测试、执行记录与上下文管理。
 
 当前文件职责：main.go 负责入口；agent.go 负责循环；model.go 负责模型协议和 HTTP；registry.go 负责注册；tools.go 负责具体操作。
@@ -255,7 +256,7 @@ SSE 用于展示执行进度；模型 token 流式输出是独立功能，需要
 - 失败或取消的轮次不写入会话历史；前端在收到终止事件后重新拉取会话，避免显示未保存的消息。
 - 每一步只做一件事，用 curl 或浏览器完成验收后再进入下一步。
 
-### W1. Go 最小 HTTP 服务（进行中）
+### W1. Go 最小 HTTP 服务（已完成）
 
 `server.go`：`Server{store SessionStore}`、`NewServer`、`Handler` 返回 `http.ServeMux`，注册 `GET /api/health`、`POST /api/sessions`、`GET /api/sessions/{id}`。统一 `writeJSON` / `writeError`。
 
@@ -263,11 +264,11 @@ SSE 用于展示执行进度；模型 token 流式输出是独立功能，需要
 - `GET /api/sessions/{id}`：调用 `store.Load`；`ErrSessionNotFound` 返回 404，非法 ID 返回 400，其他错误返回 500 且不泄漏数据库细节。
 - `main.go`：新增 `serve` 子命令，复用现有 `--store` / `--read-root` 逻辑（抽成 `openSessionStore`）；地址默认 `127.0.0.1:8080`；`http.Server` 设置 `ReadHeaderTimeout`，**不设置 WriteTimeout**（为后续 SSE 留出长连接）；用 `signal.NotifyContext` + `Shutdown` 优雅退出。
 
-当前状态：`go-agent-web` 已由 create-next-app 生成脚手架；`server.go` 已有 `writeJSON`、`writeError`、`NewServer`、`Handler` 和 `/api/health`；`main.go` 的 `serve` 分支已暂时移除以保证可编译，`runServe` 与两个会话 handler 尚未实现。下一步先补 `runServe`，再把 `serve` 分支加回 `main`。
+完成情况（2026-10-27）：`go-agent-web` 脚手架已生成；`server.go` 提供 health 与两个会话接口，`main.go` 抽出 `openSessionStore` 并新增 `serve` 子命令。`go vet ./...`、`go test ./...` 通过；curl 验收为 health 200、创建 201、读取 200、不存在 404、非法 ID 400、DELETE 405；`lsof` 确认仅监听 127.0.0.1；Ctrl+C 可正常退出。无效 ID 分支补了 `return`，避免写完 400 后继续调用 Load。
 
 验收：`go vet ./...`、`go test ./...` 通过；curl 健康检查返回 `{"status":"ok"}`；创建会话返回 201；用返回的 ID 能读回同样的消息；不存在的 ID 返回 404；CLI 单次任务与交互模式行为不变。
 
-### W2. 事件钩子与 SSE
+### W2. 事件钩子与 SSE（下一步）
 
 新增 `events.go`：`RunEvent` 与事件类型常量 `run_started`、`model_requested`、`model_responded`、`tool_requested`、`tool_completed`、`assistant_message`、`run_completed`、`run_failed`、`run_cancelled`。事件只含排查所需字段：`step`、`tool`、`call_id`、`arguments`、`result`、`error`、`duration_ms`，不打印 Key。
 
@@ -337,6 +338,6 @@ Go 服务改用 `--store postgres` 启动，前端代码不变，验证跨进程
 
 ## 下一次具体任务
 
-当前推进阶段十 W1：补完 `server.go` 的会话接口与 `runServe`，让 HTTP 服务可启动并通过 curl 验收，然后按 W2 → W6 逐步进行。
+当前推进阶段十 W2：给 `Agent` 增加运行事件钩子，实现 `POST /api/sessions/{id}/messages` 的 SSE 响应与同会话互斥，并准备可控的本地假模型。
 
 CLI 侧的后续仍是：检查不存在的会话 ID、数据库断连与取消时的错误行为；之后补离线测试，再开始执行记录与预算。

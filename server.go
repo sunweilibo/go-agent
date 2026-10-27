@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json/v2"
+	"errors"
+	"log/slog"
 	"net/http"
 )
 
@@ -37,8 +39,8 @@ func NewServer(store SessionStore) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
-	// mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
-	// mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
+	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	return mux
 }
 
@@ -48,4 +50,39 @@ type healthPayload struct {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, healthPayload{Status: "ok"})
+}
+
+func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	session := NewSession()
+	if err := s.store.Save(r.Context(), session); err != nil {
+		slog.Error("创建会话失败", "error", err)
+		writeError(w, http.StatusInternalServerError, "创建会话失败")
+		return
+	}
+	writeJSON(w, http.StatusCreated, sessionPayload{
+		ID:       session.ID,
+		Messages: session.Messages,
+	})
+}
+
+func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validSessionID.MatchString(id) {
+		writeError(w, http.StatusBadRequest, "无效的会话 ID")
+		return
+	}
+
+	session, err := s.store.Load(r.Context(), id)
+	switch {
+	case errors.Is(err, ErrSessionNotFound):
+		writeError(w, http.StatusNotFound, "会话不存在")
+	case err != nil:
+		slog.Error("加载会话失败", "session_id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "加载会话失败")
+	default:
+		writeJSON(w, http.StatusOK, sessionPayload{
+			ID:       session.ID,
+			Messages: session.Messages,
+		})
+	}
 }

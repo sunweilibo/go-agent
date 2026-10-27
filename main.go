@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,6 +17,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "serve" {
+		if err := runServe(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "HTTP 服务失败", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := os.MkdirAll("data/runs", 0o700); err != nil {
 		fmt.Fprintln(os.Stderr, "创建日志目录失败", err)
 		os.Exit(1)
@@ -44,7 +52,7 @@ func main() {
 	flag.Parse()
 
 	if *readRoot != "" {
-		if err := agent.EnableReadFile(*readRoot); err != nil {
+		if err = agent.EnableReadFile(*readRoot); err != nil {
 			fmt.Fprintln(os.Stderr, "启用文件读取失败:", err)
 			os.Exit(1)
 		}
@@ -52,24 +60,14 @@ func main() {
 
 	var store SessionStore
 
-	switch *storeName {
-	case "file":
-		store = FileSessionStore{}
-	case "postgres":
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		pool, err := openDatabase(ctx)
-		cancel()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "连接数据库失败: ", err)
-			os.Exit(1)
-		}
-		defer pool.Close()
-
-		store = &PostgresSessionStore{Pool: pool}
-	default:
-		fmt.Fprintln(os.Stderr, "未知的存储方式:", *storeName)
+	storeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	store, closeStore, err := openSessionStore(storeCtx, *storeName)
+	cancel()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	defer closeStore()
 
 	var session *Session
 	if *sessionID == "" {
@@ -167,4 +165,62 @@ func runTask(agent *Agent, store SessionStore, session *Session, task string) (r
 		return fmt.Errorf("回答已输出,但保存会话失败: %w", err)
 	}
 	return nil
+}
+
+func openSessionStore(ctx context.Context, name string) (SessionStore, func(), error) {
+	switch name {
+	case "file":
+		return FileSessionStore{}, func() {}, nil
+	case "postgres":
+		pool, err := openDatabase(ctx)
+		if err != nil {
+			return nil, func() {}, fmt.Errorf("选择数据库失败: %w", err)
+		}
+		return &PostgresSessionStore{Pool: pool}, pool.Close, nil
+	default:
+		return nil, func() {}, fmt.Errorf("未知的存储方式:%s", name)
+	}
+}
+
+func runServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	addr := fs.String("addr", "127.0.0.1:8080", "监听地址")
+	storeName := fs.String("store", "file", "会话存储: file 或 postgres")
+	fs.Parse(args)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	storeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	store, closeStore, err := openSessionStore(storeCtx, *storeName)
+	cancel()
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           NewServer(store).Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		slog.Info("HTTP 服务启动", "addr", *addr)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+	}
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelShutdown()
+	return srv.Shutdown(shutdownCtx)
 }
