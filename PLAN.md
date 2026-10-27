@@ -243,6 +243,84 @@ SSE 用于展示执行进度；模型 token 流式输出是独立功能，需要
 
 验收：CLI 行为保持一致；测试通过；依赖方向清晰。
 
+## 阶段十：配套 Web 前端 go-agent-web
+
+目标：在独立项目 `../go-agent-web`（Next.js App Router + TypeScript + Tailwind）中提供单会话流式聊天界面。浏览器只与 Next.js 通信，开发期由 Next.js 的 rewrites 把 `/api/*` 代理到本机 Go 服务；生产化部署不在本阶段范围。
+
+边界与安全约定：
+
+- Go HTTP 服务只监听 `127.0.0.1`，不配置 CORS；跨域问题由 Next.js 代理解决。
+- DEEPSEEK_API_KEY 只存在于 Go 进程环境，DATABASE_URL 只存在于本机环境；两者都不进入前端产物、URL、响应体或日志。
+- 这里的“流式”指执行事件进度（模型请求、工具调用、完成、失败），token 级流式输出属于独立功能，另行设计。
+- 失败或取消的轮次不写入会话历史；前端在收到终止事件后重新拉取会话，避免显示未保存的消息。
+- 每一步只做一件事，用 curl 或浏览器完成验收后再进入下一步。
+
+### W1. Go 最小 HTTP 服务（进行中）
+
+`server.go`：`Server{store SessionStore}`、`NewServer`、`Handler` 返回 `http.ServeMux`，注册 `GET /api/health`、`POST /api/sessions`、`GET /api/sessions/{id}`。统一 `writeJSON` / `writeError`。
+
+- `POST /api/sessions`：`NewSession()` 后用 store 保存，返回 201 和 `{id, messages}`。
+- `GET /api/sessions/{id}`：调用 `store.Load`；`ErrSessionNotFound` 返回 404，非法 ID 返回 400，其他错误返回 500 且不泄漏数据库细节。
+- `main.go`：新增 `serve` 子命令，复用现有 `--store` / `--read-root` 逻辑（抽成 `openSessionStore`）；地址默认 `127.0.0.1:8080`；`http.Server` 设置 `ReadHeaderTimeout`，**不设置 WriteTimeout**（为后续 SSE 留出长连接）；用 `signal.NotifyContext` + `Shutdown` 优雅退出。
+
+当前状态：`go-agent-web` 已由 create-next-app 生成脚手架；`server.go` 已有 `writeJSON`、`writeError`、`NewServer`、`Handler` 和 `/api/health`；`main.go` 的 `serve` 分支已暂时移除以保证可编译，`runServe` 与两个会话 handler 尚未实现。下一步先补 `runServe`，再把 `serve` 分支加回 `main`。
+
+验收：`go vet ./...`、`go test ./...` 通过；curl 健康检查返回 `{"status":"ok"}`；创建会话返回 201；用返回的 ID 能读回同样的消息；不存在的 ID 返回 404；CLI 单次任务与交互模式行为不变。
+
+### W2. 事件钩子与 SSE
+
+新增 `events.go`：`RunEvent` 与事件类型常量 `run_started`、`model_requested`、`model_responded`、`tool_requested`、`tool_completed`、`assistant_message`、`run_completed`、`run_failed`、`run_cancelled`。事件只含排查所需字段：`step`、`tool`、`call_id`、`arguments`、`result`、`error`、`duration_ms`，不打印 Key。
+
+`Agent.RunWithEvents(ctx, session, task, emit)`：在现有循环的模型请求前后、工具执行前后、最终提交处调用 `emit`；`Run` 改为调用 `RunWithEvents` 并传 nil，保证现有测试与 CLI 行为不变（`emit == nil` 时零开销）。
+
+`POST /api/sessions/{id}/messages`，请求体 `{"content":"..."}`：
+
+- 先 `Load` 会话，缺失返回 404；同一会话同时只允许一个 Run（内存互斥表），冲突返回 409。
+- 响应头 `Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive`，每条事件写完立即 `Flush`。
+- 事件帧格式 `data: {json}\n\n`；终止事件为 `run_completed` / `run_failed` / `run_cancelled` 之一，结束后返回。
+- 成功后保存会话；失败或取消不保存，历史保持失败前的状态。
+- 请求 ctx 断开即取消 Run，不再继续请求模型或执行工具。
+
+为本地联调准备可控的假模型（如 `--model fake`），按脚本返回固定的工具调用与最终回答，避免每次调试都消耗真实额度；真实模型仍通过环境变量启用。
+
+验收：`curl -N` 能看到按顺序到达的事件，工具事件带 `call_id` 且严格成对；中途 Ctrl+C 能终止服务端 Run 并收到取消事件；并发请求同一会话得到 409；`go test -race ./...` 通过。
+
+### W3. Next.js 脚手架与代理
+
+在 `go-agent-web` 中确认依赖与结构：TypeScript、Tailwind、App Router、`src/` 目录；补充 `react-markdown` 与 `remark-gfm`。
+
+`next.config.ts` 增加 rewrites：`/api/:path*` → `http://127.0.0.1:8080/api/:path*`，不把后端地址写进浏览器代码。
+
+`src/lib/types.ts` 手写与 Go 对齐的类型：`Message`、`SessionPayload`、`RunEvent`（用可辨识联合），字段名与 JSON 标签一致。
+
+验收：`npm run dev` 后经 `localhost:3000/api/health` 拿到与直连相同的结果；`curl -N` 经代理请求 SSE 时事件是逐条到达而不是被缓冲；`next build` 通过。
+
+### W4. 会话创建与历史渲染
+
+`src/lib/api.ts` 封装 `createSession`、`getSession`；会话 ID 存 localStorage，页面加载时尝试恢复，404 则新建。注意 React StrictMode 下 effect 会执行两次，用 ref 或请求取消避免重复创建两个会话。
+
+组件：`MessageList`、`MessageBubble`（区分 user / assistant，Markdown 渲染）、`HeaderBar`（显示会话 ID 与新建按钮）、`Composer`（输入框与发送按钮，本步可先不接流式）。system 消息和 tool 消息不直接展示为聊天气泡。
+
+验收：刷新页面历史仍在；换浏览器或清空 localStorage 得到新会话；新建按钮能切换会话且旧会话不丢失。
+
+### W5. SSE 客户端、工具卡片、取消与错误
+
+`src/lib/sse.ts`：因为要 POST，不能用 `EventSource`；用 `fetch` + `ReadableStream` + `TextDecoder({stream:true})`，按空行分帧，兼容一帧被拆到多个 chunk、多个帧落在同一 chunk 的情况；只处理 `data:` 行，忽略注释与心跳。
+
+`ToolCallCard`：以 `call_id` 为 key 合并 `tool_requested` 与 `tool_completed`，展示工具名、参数、结果、耗时与错误；结果过长时折叠。`assistant_message` 到达后作为正式气泡入列。
+
+交互：发送中禁用输入并显示“停止”按钮，点击时 `AbortController.abort()`；收到终止事件后调用 `getSession` 刷新，保证界面与已保存历史一致；409、网络中断、服务端错误都要有可见提示。
+
+验收：问“现在几点”能看到工具卡片从进行中变为完成；工具超时能显示错误结果但对话继续；取消后界面回到可输入状态且历史与服务端一致；断开 Go 服务后有明确错误提示。
+
+### W6. 切换 Postgres 与整体验收
+
+Go 服务改用 `--store postgres` 启动，前端代码不变，验证跨进程、跨重启的历史恢复。
+
+安全复查：`lsof -iTCP -sTCP:LISTEN` 确认只监听 127.0.0.1；检查响应头没有 `Access-Control-Allow-Origin`；搜索前端产物与日志，确认没有 Key 或连接串；`.env` 与 `data/` 均未被提交。
+
+端到端验收：冷启动 Go → 新建会话 → 多轮含工具的对话 → 重启 Go → 刷新浏览器仍能恢复历史 → 取消与失败路径不污染历史。可选：`next build && next start` 走一次生产构建，确认代理与流式仍正常。
+
 ## 每一步的工作方式
 
 1. 明确本次行为和验收输入。
@@ -259,4 +337,6 @@ SSE 用于展示执行进度；模型 token 流式输出是独立功能，需要
 
 ## 下一次具体任务
 
-Supabase 存储已通过真实的保存和跨进程加载验证。下一步检查不存在的会话 ID、数据库断连与取消时的错误行为；之后补离线测试，再开始执行记录与预算。
+当前推进阶段十 W1：补完 `server.go` 的会话接口与 `runServe`，让 HTTP 服务可启动并通过 curl 验收，然后按 W2 → W6 逐步进行。
+
+CLI 侧的后续仍是：检查不存在的会话 ID、数据库断连与取消时的错误行为；之后补离线测试，再开始执行记录与预算。
